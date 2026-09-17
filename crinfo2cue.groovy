@@ -30,6 +30,7 @@ String outputType = 'flac'
 // the $ in front is not strictly needed -- but deconflicts in cases where text term collides with metadata 
 // e.g. to express something like (disc 1 of 2)
 List outputDir = ['/mnt/Media/Music/IMAGES/', '$album_artist']
+String cueFile = "temp.cue"
 
 Map filenameFormats = [
     standard    : ['$album_artist',   ' - (', '$year', ') ', '$album',                                       '.', outputType ],
@@ -264,15 +265,16 @@ if (matcher.find()) {
     String cueHeader = albumToCue(albumMap)
     String cueTracks = tracksToCue(tracksInfo)
 
-    String cue =  (cueHeader + cueTracks)
+    String cueText =  (cueHeader + cueTracks)
     // remove blank lines
-    String noBlanksCue = cue.split('\n').findAll { it.trim() }.join('\n')
+    String noBlanksCue = cueText.split('\n').findAll { it.trim() }.join('\n')
     // remove lines ending in null or "null"
     // this avoids having to test for every line to see if metadata exists
     // could elvis operator all calls to set a value other than null, so match is very explicit
     String printableCue = noBlanksCue.split('\n').findAll { (! (it =~ /\s(null|"null")$/)) ? it : '' }.join('\n') 
 
-    println printableCue
+    File cue = new File(cueFile)
+    cue.text = printableCue
 } else {
     println 'match not found'
 }
