@@ -1,0 +1,18 @@
+{
+    "extends": "recommended",
+    "rules": {
+        "TernaryCouldBeElvis": {
+            "enabled": false
+        },
+        "JavaIoPackageAccess": {
+            "enabled": false
+        },
+        "DuplicateNumberLiteral": {
+            "ignoreNumbers": "0,1,2,3,4"
+        },
+        "DuplicateStringLiteral":{
+            "ignoreStrings": "\n,\r, (,-,),",
+            "duplicateStringMinimumLength": 3
+        }
+    }
+}
