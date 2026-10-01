@@ -36,7 +36,8 @@ import java.nio.file.Files
 import java.nio.file.Paths
 import java.nio.file.Path
 
-import groovy.transform.CompileStatic
+// import groovy.transform.CompileStatic
+import java.math.RoundingMode
 
 /**
  * cruft - a class for using cyanrip for unified file tasks
@@ -44,7 +45,7 @@ import groovy.transform.CompileStatic
  @author Paul Casto
  */
 
-@CompileStatic
+// @CompileStatic
 @Slf4j
 class Cruft {
 
@@ -197,8 +198,8 @@ class Cruft {
             Integer secondsPerMinute = 60
             Integer framesPerMinute = framesPerSecond * secondsPerMinute // 4500
 
-            Integer minutes = (totalSectors / framesPerMinute).trunc().toInteger()
-            Integer seconds = ((totalSectors % framesPerMinute) / framesPerSecond).trunc().toInteger()
+            Integer minutes = ((totalSectors / framesPerMinute).setScale(0, RoundingMode.DOWN)).toInteger() // trunc() in 2.5+
+            Integer seconds = (((totalSectors % framesPerMinute) / framesPerSecond).setScale(0, RoundingMode.DOWN)).toInteger()
             Integer frames  = (totalSectors % framesPerSecond)
 
             // Format to 2-digit zero-padded strings
@@ -516,8 +517,9 @@ class Cruft {
                 // give the albumMap all of the data that it should have but is buried in track info output
                 // but ignore the items that really are specific to the track
                 Map trackOneMeta = trackOne['trackMeta']
-                trackOneMeta.removeAll { key, value -> (['title', 'artist', 'mbid', 'track'].contains(key)) }
-                albumMap += trackOneMeta
+                // trackOneMeta.removeAll { key, value -> (['title', 'artist', 'mbid', 'track'].contains(key)) } // not in 2.4.21...
+                Map trackOneFiltered = trackOneMeta.findAll {key, value -> !(['title', 'artist', 'mbid', 'track'].contains(key)) }
+                albumMap += trackOneFiltered
 
                 // plus some additional metadata
                 albumMap['pregap'] = (String) trackOne.trackProp.'Start LSN'
@@ -530,8 +532,8 @@ class Cruft {
                 Matcher drive = (infoText =~ /(?<=CDROM sensed:\s*)(.*)/)
                 if (drive.find()) {
                     albumMap.driveInfo = drive.group(1).trim().replaceAll(/\s+/, '-')
-                    albumMap.removeAll { key, value ->
-                        ['Drive used', 'Device model'].contains(key)
+                    albumMap = albumMap.findAll { key, value ->
+                       !(['Drive used', 'Device model'].contains(key))
                     }
                 }
 
@@ -641,7 +643,7 @@ class Cruft {
             String procText = ''
             if ((albumMap.pregap).toInteger() > 0) {
                 log.info "Creating pregap file of ${albumMap.pregap} frames for insertion prior to track 1"
-                Integer pregapMsec = (((albumMap.pregap).toInteger() * 1000) / 75).round().toInteger() //?precise
+                Integer pregapMsec = (((albumMap.pregap).toInteger() * 1000) / 75).setScale(0, RoundingMode.HALF_UP).toInteger() //?precise
                 String[] pregapCmd =
                     [ffmpeg, '-y', '-f', 'lavfi', '-i', 'anullsrc=channel_layout=stereo:sample_rate=44100',
                             '-t', "${pregapMsec}ms", util.workingAbsolute("0 - pregap.${outputType}")]
@@ -684,7 +686,7 @@ class Cruft {
 
         String fileName = ''
         // change format to be #key# rather than $
-        filenameFormats["${format}"].each { formatElement ->
+        filenameFormats["${format}"].each { String formatElement ->
             if (formatElement[0] != '$') {
                 fileName += formatElement
             } else {
