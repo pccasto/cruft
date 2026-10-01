@@ -1,13 +1,26 @@
-#! /usr/bin/groovy
+#! /usr/bin/env groovy
 /*
 Copyright (c) Paul C. Casto
 Released under MIT license
 This file is part of CyanRip Unified File Tools (cruft)
 */
 
-// needed by calling code
+package com.github.pccasto.cruft
 
-//package com.pccasto
+@Grapes([
+   // @Grab(group='org.apache.logging', module='groovy-log4j2', version='5.0.8'), // Match your Groovy version
+    @Grab(group='org.apache.logging.log4j', module='log4j-slf4j2-impl', version='2.26.1'),
+    @Grab(group='org.apache.logging.log4j', module='log4j-core', version='2.26.1'),
+    @Grab(group='org.slf4j', module='slf4j-api', version='2.0.17'),
+    @GrabConfig(systemClassLoader=true)
+])
+import groovy.util.logging.Log4j2
+import groovy.util.logging.Slf4j
+
+import org.slf4j.LoggerFactory
+import org.apache.logging.log4j.Level
+import java.util.logging.LogManager
+import org.apache.logging.log4j.core.config.Configurator
 
 import java.util.regex.Matcher
 import java.time.Year
@@ -21,41 +34,57 @@ import groovy.io.FileType
 
 import java.nio.file.Files
 import java.nio.file.Paths
+import java.nio.file.Path
 
-import groovy.util.logging.Log
+import groovy.transform.CompileStatic
 
 /**
-* cruft - a class for using cyanrip for unified file tasks
-*
-* @author Paul Casto
-*/
-@Log
+ * cruft - a class for using cyanrip for unified file tasks
+ *
+ @author Paul Casto
+ */
+
 @CompileStatic
+@Slf4j
 class Cruft {
 
     Cruft() {
+        logLevel('info') //set a default
+
         // Register the shutdown hook
+        /*
         Runtime.getRuntime().addShutdownHook(new Thread({
             cleanUp()
         }))
+        */
+    }
+
+    // need a method around this !!!
+    void logLevel (String level) {
+        try {
+            Configurator.setLevel('com.github.pccasto.cruft.Cruft', level);
+        } catch (Exception e) {
+            // probably won't get here, because called with invalid level the setLevel seems to default to DEBUG
+            println "Could not set logging to level ${level}"
+            println e
+        }
     }
 
     // calling code can override these from command line or config file.
     // offset, outputDir and filenameFormats are the ones most likely to need to be set by the user
-
     String cyanrip    = '/usr/bin/cyanrip '  // allow for local builds
     // defined in case they are not in the path, or specific versions to be used
-    String ffmpeg = 'ffmpeg'
-    String metaflac = 'metaflac'
+    String ffmpeg     = 'ffmpeg'
+    String metaflac   = 'metaflac'
 
     // this could be set on a per drive basis when multiple drives are available
     Integer offset    = null
     String cueComment = 'Created by CRUFT'   // advertisement for now :-)
     String outputType = 'flac'               // currently only supported type
 
-    String workingPath = '/tmp' // to allow user set the tempDir area to something other than /tmp (say a ramdisk)
-    File tempDir
-    String tempDirPath
+    String workingPath = '/tmp' // to allow user set the workingDir area to something other than /tmp (say a ramdisk)
+    File workingDir
+    String workingDirPath
 
     // this approach avoids 'eval' but even so, could be subject to abuse
     // if any of these values (taken from metadata) could be manipulated upstream, then bad things could happen.
@@ -65,25 +94,28 @@ class Cruft {
     // e.g. to express something like (disc 1 of 2)
     List outputDirFormat = ['/mnt/Media/Music/IMAGES/', '$album_artist']
 
-    Map filenameFormats = [
-        standard    : ['$album_artist', ' - (', '$year', ') ', '$album',  '.', outputType ],
-        multidisc   : ['$album_artist', ' - (', '$year', ') ', '$album', ' [', '$disc', '/',
-                     '$totaldiscs', ']', '.', outputType ],
-        vastandard  : ['Various Artists', ' - (', '$year', ') ', '$album', '.', outputType ],
-        vamultidisc : ['Various Artists', ' - (', '$year', ') ', '$album', ' [', '$disc', '/',
-                    '$totaldiscs', ']', '.', outputType ]
+    List<String> directoryPortion = ['album_artist']
+    List<String> basePortion = ['$album_artist', ' - (', '$year', ') ', '$album']
+    List<String> multiDiskPortion = [' [', '$disc', '/',  '$totaldiscs', ']']
+    List<String> outputPortion =  [ '.', outputType ]
+    List<String> vaPortion = ['Various Artists']
+    List<String> vaBase = vaPortion + basePortion[1..-1]
+   // End of settable variables ---------------------------------
+
+    private Map<String,List<String>> filenameFormats = [
+        standard    : basePortion + outputPortion,
+        multidisc   : basePortion + multiDiskPortion + outputPortion,
+        vastandard  : vaBase + outputPortion,
+        vamultidisc : vaBase + multiDiskPortion + outputPortion
     ]
 
-    // End of settable variables ---------------------------------
-
     // probably read only, but maybe calling code could build its own
-    String  sheet         = null        // set by Cue / buildCue
-    Map     albumMap      = [:]         // from -I set by parse album + track 1 info
-    List    tracksMapList = []          // from -I set by parse array of track maps
-    Integer releaseID     = 1           // mbz release id, unless another one selected
-    String  cueFile       = 'cruft.cue' // temp cue for merger
-    String  frontImage    = 'Front.jpg' // set by cyanrip
-    String  backImage     = 'Back.jpg'  // set by cyanrip
+    // several of these belong in the subClasses
+    private Map<String,String>  albumMap      = [:]         // from -I set by parse album + track 1 info
+    private List<Map>           tracksMapList = []          // from -I set by parse array of track maps
+    private Integer             releaseID     = 1           // mbz release id, unless another one selected
+    private String              frontImage    = 'Front.jpg' // set by cyanrip
+    private String              backImage     = 'Back.jpg'  // set by cyanrip
 
     // subclasses - not all may be needed, but by declaring here
     // they can use & manipulate cruft instance variables
@@ -92,55 +124,60 @@ class Cruft {
     //
     // if they were not inner classes, and use the 'extends Cruft' in their definition,
     // they might have the same capability, but inter + 'extends Cruft' is a Stack Overflow
-    Cue         cue =      new Cue()
-    CyanripInfo cyanInfo = new CyanripInfo()
-    CyanripRip  cyanRip  = new CyanripRip()
-    Util        util =     new Util()
-    Merger      merger =   new Merger()
-    Tagger      tagger =   new Tagger()
+    // these could become private if there are class level wrappers to take all needed actions
+    private Musicbrainz mbz =      new Musicbrainz()
+    private Cue         cue =      new Cue()
+    private CyanripInfo cyanInfo = new CyanripInfo()
+    private CyanripRip  cyanRip  = new CyanripRip()
+    private Util        util =     new Util()
+    private Merger      merger =   new Merger()
+    private Tagger      tagger =   new Tagger()
 
     // MBZ specific utilities-------------------
-    // get the year as a string from MBZ date string
-    static String extractYear(String dateStr) {
-        if (!dateStr) { return 'none' }
-        // what date patterns will be sent frm MBZ ?
-        List patterns  = ['yyyy-MM-dd', 'yyyy', 'dd/MM/yyyy', 'MMM dd, yyyy', 'MM-dd-yyyy']
-        for (String pattern : patterns) {
-            try {
-                def formatter = DateTimeFormatter.ofPattern(pattern)
-                return Year.parse(dateStr, formatter)
-            } catch (DateTimeParseException ignored) {
-            // Try the next pattern
+    class Musicbrainz {
+        // get the year as a string from MBZ date string
+        static String extractYear(String dateStr) {
+            if (!dateStr) { return 'none' }
+            // what date patterns will be sent frm MBZ ?
+            List patterns  = ['yyyy-MM-dd', 'yyyy', 'dd/MM/yyyy', 'MMM dd, yyyy', 'MM-dd-yyyy']
+            for (String pattern : patterns) {
+                try {
+                    DateTimeFormatter formatter = DateTimeFormatter.ofPattern(pattern)
+                    return Year.parse(dateStr, formatter)
+                } catch (DateTimeParseException ignored) {
+                // Try the next pattern
+                }
             }
+            throw new IllegalArgumentException("Unable to parse date: $dateStr")
         }
-        throw new IllegalArgumentException("Unable to parse date: $dateStr")
-    }
 
-    // handle the case when MBZ returns multiple matches
-    Integer chooseFromMultiple(String infoText) {
-        log.debug infoText
-        Matcher releases = infoText =~ /(?s)\s+\d+\s+\(ID[^\n]+?\):\s([^\n]+)/
-        printf 'Enter an index number (not an ID): '
-        String input = System.console().readLine()
-        Matcher index = (input =~ /\d+/)
-        Integer indexSelected
-        if (index) {
-            // verify that index is within the bounds of the returned list - probably more trouble than it was worth
-            // if someone selects a non-sane value an attempt is made, return ia "Invalid release index" is displayed
-            // but why allow them to do so?
-            Integer releaseCount = releases.size().toInteger()
-            Range range = 1..releaseCount
-            indexSelected = index[0].toInteger()
-            if (indexSelected in range) {
-                log.info "Getting Musicbrainz data using index ${indexSelected} - ${releases[indexSelected -1][1]}"
-                releaseID = indexSelected
+        // allow the user to select when MBZ returns multiple matches
+        Integer chooseFromMultiple(String infoText) {
+            log.debug infoText
+            Matcher releases = (infoText =~ /(?s)\s+\d+\s+\(ID[^\n]+?\):\s([^\n]+)/)
+            printf 'Enter an index number (not an ID): '
+            String input = System.console().readLine()
+            Matcher index = (input =~ /\d+/)
+            Integer indexSelected
+            if (index) {
+                // verify that index is within the bounds of the returned list - probably more trouble than it was worth
+                // if someone selects a non-sane value an attempt is made, return "Invalid release index" is displayed
+                // but why allow them to do so?
+                Integer releaseCount = releases.size().toInteger()
+                Range range = 1..releaseCount
+                String idMatch = index[0]
+                indexSelected = idMatch.toInteger()
+                if (indexSelected in range) {
+                    Integer indexToGroup = indexSelected - 1
+                    log.info "Getting Musicbrainz data with index ${indexSelected} - ${releases.group(indexToGroup)[1]}"
+                } else {
+                    errorExit("You selected a number (${indexSelected}) that is out of range.")
+                }
             } else {
-                errorExit("You selected a number (${indexSelected}) that is out of range.")
+                errorExit('No integer value selected')
             }
-        } else {
-            errorExit('No integer value selected')
+            return indexSelected
         }
-        return indexSelected
     }
     //-----------------------------------------
 
@@ -160,9 +197,9 @@ class Cruft {
             Integer secondsPerMinute = 60
             Integer framesPerMinute = framesPerSecond * secondsPerMinute // 4500
 
-            Integer minutes = totalSectors / framesPerMinute
-            Integer seconds = (totalSectors % framesPerMinute) / framesPerSecond
-            Integer frames  = totalSectors % framesPerSecond
+            Integer minutes = (totalSectors / framesPerMinute).trunc().toInteger()
+            Integer seconds = ((totalSectors % framesPerMinute) / framesPerSecond).trunc().toInteger()
+            Integer frames  = (totalSectors % framesPerSecond)
 
             // Format to 2-digit zero-padded strings
             return String.format('%02d:%02d:%02d', minutes, seconds, frames)
@@ -171,18 +208,18 @@ class Cruft {
         // takes data in form of key : value newline and converts to a map
         // all strings for values -- if int, then using code needs to convert
         // could generalize to allow for different tuple internal and external delimiters...
-        static Map infoToMap(String info) {
-            Map newMap = [:]
-            info.tokenize("\n").each { infoLine ->
+        static Map<String,String> infoToMap(String info) {
+            Map<String,String> newMap = [:]
+            info.tokenize('\n').each { infoLine ->
                 if (!(infoLine =~ /:/)) { return }  // skip lines that don't follow expected pattern
-                List kvTuple = infoLine.split(':', 2)
+                String[] kvTuple = infoLine.split(':', 2)
                 newMap[kvTuple[0].trim()] = kvTuple[1].trim()
             }
             return newMap
         }
 
         // this is a Util like method, but does not behave well as a static
-        String procRunner(List cmdList, String procName = null) {
+        String procRunner(String[] cmdList, String procName = null) {
             // Save the original stdout so we can still print to the console
             PrintStream originalOut = System.out
 
@@ -218,7 +255,7 @@ class Cruft {
                         if (procName == 'cyanrip rip') {
                             if (line =~ /Ripping and encoding/) {
                                 // no need to log
-                                modifiedLine = line.replaceFirst(~/(Ripping and encoding[^\n]+)\n/, "\r" + '$1')
+                                modifiedLine = line.replaceFirst(~/(Ripping and encoding[^\n]+)\n/, '\r' + '$1')
                             } else {
                                 procText += line
                             }
@@ -232,7 +269,7 @@ class Cruft {
 
                 }
 
-                System.setOut(new PrintStream(filterStream))
+                System.out = new PrintStream(filterStream)
                 StringBuilder stderr = new StringBuilder()
 
                 Process proc = cmdList.execute()
@@ -251,82 +288,75 @@ class Cruft {
                 // could return map of exit code, stdout, stderr; but currently only text
                 return procText // calling code can examine & operate based on text
             } finally {
-                System.setOut(originalOut)
+                System.out = originalOut
             }
         }
 
-        File makeTempDIr() {
-            if (tempDirPath) { /// allow user to set it to existing path
-                tempDir = new File(tempDirPath)
+        File makeWorkingDir() {
+            if (workingDirPath) { /// allow user to set it to existing path
+                workingDir = new File(workingDirPath)
                 // but verify it will work
-                if (tempDir.exists()) {
-                    if (!tempDir.isDirectory()) {
+                if (workingDir.exists()) {
+                    if (!workingDir.directory) {
                         // or throw an error
-                        errorExit("The path ${tempDirPath} exists but it is not a directory.")
+                        errorExit("The path ${workingDirPath} exists but it is not a directory.")
                     }
                 } else {
-                    log.info "Creating ${tempDirPath}"
-                    tempDir.mkdirs()
+                    log.info "Creating ${workingDirPath}"
+                    workingDir.mkdirs()
                 // or throw an error...
                 }
             } else {
                 workingPath = workingPath ? workingPath : '/tmp'  //groovy 2.x does not have ?=
-                def customParent = Paths.get(workingPath)
-                tempDir = (Files.createTempDirectory(customParent, 'cruft-').toFile())
-                tempDirPath = tempDir.absolutePath // be explicit
-                log.info "The temporary directory has been created at: ${tempDirPath}"
-            }
-            return tempDir
+                Path customParent = Paths.get(workingPath)
 
-        // to make the temp dir non persistent
-        // -- will default to clear on exit w/ cmd line switch
-        // but for now leave the dir for inspection during initial coding efforts
-        // not sure this needs the toFile()
-        //tempDir.toFile().deleteOnExit()
-        // addShutdownHook { ... }
+                workingDir = (Files.createTempDirectory(customParent, 'cruft-').toFile())
+                workingDirPath = workingDir.absolutePath // be explicit
+                log.info "The temporary directory has been created at: ${workingDirPath}"
+            }
+            return workingDir
+
+            // to make the temp dir non persistent
+            // -- will default to clear on exit w/ cmd line switch
+            // but for now leave the dir for inspection during initial coding efforts
+            // not sure this needs the toFile()
+            //workingDir.toFile().deleteOnExit()
+            // addShutdownHook { ... }
         }
 
-        // lots of files to be written to the tempdir, so have a method call for consistency
-        String tempAbsolutePath(String filename) {
-            return Paths.get(tempDirPath, filename)
+        // lots of files to be written to the workingDir, so have a method call for consistency
+        String workingAbsolute(String filename) {
+            String absolute = filename
+            if (filename[0] != '/') {
+                absolute = Paths.get(workingDirPath, filename).toString()
+            }
+            return absolute
         }
 
     }
 
     //-----------------------------------------
 
-    // creates an album filename based on format list and album metadata
-    String albumName() {
-        String format = (albumMap.album_artist =~ /Various Artists/) ? 'va' : ''
-        format += (albumMap.totaldiscs == '1') ? 'standard' : 'multidisc'
-
-        String fileName = ''
-        // change format to be #key# rather than $
-        filenameFormats["${format}"].each { formatElement ->
-            if (formatElement[0] != '$') {
-                fileName += formatElement
-            } else {
-                String meta = formatElement.drop(1)
-                if (albumMap[meta]) {
-                    fileName += albumMap[meta]
-                } else {
-                    fileName += formatElement
-                }
-            }
-        }
-        return fileName
-    }
-
     class Cue {
 
         String sheet = ''
+        String cueFileName = 'cruft.cue' // temp cue for merger
+        File cueFile
+        String cueAbsolute
+
+        void writeFile(String cueFileName = cueFileName) {
+            cueAbsolute = util.workingAbsolute(cueFileName)
+            if (!sheet) { makeSheet() }
+            cueFile = new File(cueAbsolute)
+            cueFile.text = sheet
+        }
 
         // use the info returned from cyanrip -I (or the logs?) to create a cue sheet
         // this really could be any source of metadata... put into Map form
-        String build(Map albumMap, List tracksMapList) {
+        String makeSheet(Map albumMap = albumMap, List<Map> tracksMapList = tracksMapList) {
             String cueHeader = albumToCue(albumMap)
             String cueTracks = ''
-            tracksMapList.each { trackMap ->
+            tracksMapList.each { trackMap  ->
                 cueTracks += trackToCue(trackMap)
             }
             String cueText =  (cueHeader + cueTracks)
@@ -342,7 +372,7 @@ class Cruft {
         // There are elements of the album that are only exposed in the track output.
         // so need to pull data from track01 -- otherwise there needs to be convoluted code in the track handling
         // calling code is responsible for building the albumMap with all the needed info for the header.
-        String albumToCue(Map albumMap) {
+        private String albumToCue(Map albumMap) {
             String cueHeader = """
                 REM COMMENT "${albumMap.cueComment}"
                 REM MUSICBRAINZ_ID "${albumMap.'DiscID'}"
@@ -369,28 +399,29 @@ class Cruft {
         }
 
         // use the info returned from cyanrip -I (or the logs?) to create a track entry
-        String trackToCue(Map trackMap) {
-            String trackNumber = trackMap.trackNumber
-            Map properties = trackMap.properties
-            Map metadata   = trackMap.metadata
+        private String trackToCue(Map<String,Map> trackMap) {
+            Map<String,String> trackProp = trackMap.trackProp
+            Map<String,String> trackMeta = trackMap.trackMeta
+            Integer trackNumber = trackMeta.track.toInteger()
 
             String index00 = ''
             // can this go without the if test?
-            if (properties['Pregap LSN'] != 'none') {
-                Matcher pregapLSN = ("${properties['Pregap LSN']}" =~ /^\d+/)
+            if (trackProp['Pregap LSN'] != 'none') {
+                Matcher pregapLSN = (trackProp.'Pregap LSN' =~ /^\d+/)
                 if (pregapLSN.find()) {
-                    String pregap = Util.lsnToCueTimestamp(pregapLSN[0].toInteger())
+                    Integer pregapLSNValue = ((String) pregapLSN[0]).toInteger()
+                    String pregap = Util.lsnToCueTimestamp(pregapLSNValue)
                     index00 = "INDEX 00 ${pregap}"
                 }
             }
 
-            String index01 = 'INDEX 01 ' + Util.lsnToCueTimestamp(properties['Start LSN'].toInteger())
+            String index01 = 'INDEX 01 ' + Util.lsnToCueTimestamp(trackProp['Start LSN'].toInteger())
             String trackListing = """
-                |  TRACK ${trackNumber} AUDIO
-                |    TITLE "${metadata.title}"
-                |    PERFORMER "${metadata.artist}"
-                |    REM mbid "${metadata.mbid}"
-                |    REM ISRC ${metadata.isrc}
+                |  TRACK ${sprintf('%02d', trackNumber)} AUDIO
+                |    TITLE "${trackMeta.title}"
+                |    PERFORMER "${trackMeta.artist}"
+                |    REM mbid "${trackMeta.mbid}"
+                |    REM ISRC ${trackMeta.isrc}
                 |    ${index00}
                 |    ${index01}
             """.stripMargin()
@@ -404,55 +435,61 @@ class Cruft {
     class CyanripInfo {
 
         String infoText = ''
+        File infoFile
 
-        List tracksToMapList(String tracksInfo) {
-            Matcher matchTracks = tracksInfo =~ /(?s)(\n|^)Track \d+ info:.+?(?=\n\s*File\(s\)|$)/
+        List<Map> tracksToMapList(String tracksInfo) {
+            Matcher matchTracks = (tracksInfo =~ /(?s)(\n|^)Track \d+ info:.+?(?=\n\s*File\(s\)|$)/)
             if (!matchTracks.find()) {
                 errorExit('no match for tracks')
             }
-            matchTracks.each { track ->
-                tracksMapList << trackToMap(track.join("\n"))
+            matchTracks.each { List track ->
+                tracksMapList << trackToMap(track.join('\n'))
             }
             return tracksMapList
         }
 
-        Map trackToMap(String trackInfo, String trackNo = '\\d+') {
-            Matcher matchTrack =
-                (trackInfo =~ /(?s)Track\s+($trackNo)\s+info:.+Properties[^\n]*\n(.+?)\n\s+Metadata[^\n]*\n(.+?)\n.+?/)
+        Map<String, Map> trackToMap(String trackInfo, String trackNo = '\\d+') {
+            Matcher matchTrack = (trackInfo =~
+            /(?s)Track\s+($trackNo)\s+info:.+?Properties[^\n]*?\n(.+?)\n\s+Metadata[^\n]*\n(.+?)\n(?=\s+(Embed|File))/
+            )
             if (!matchTrack.find()) {
-                errorExit("could not match a track:\n$trackInfo")
+                errorExit("Could not match a track:\n$trackInfo")
             }
-            String trackNumber = sprintf('%02d', matchTrack.group(1).toInteger())
-            Map properties = Util.infoToMap(matchTrack.group(2))
-            Map metadata = Util.infoToMap(matchTrack.group(3))
-            Map trackMap = [trackNumber: trackNumber,
-                properties: properties,
-                metadata: metadata]
+            // yes, these intermediate variables are not needed, but helped while developing/troubleshooting...
+            //Integer trackNumber = matchTrack.group(1).toInteger()
+            Map trackProp = Util.infoToMap(matchTrack.group(2))
+            Map trackMeta = Util.infoToMap(matchTrack.group(3))
+            Map trackMap = [
+                trackProp: trackProp,
+                trackMeta: trackMeta
+            ]
             return trackMap
         }
 
-        Void getInfoText(String infoFile = null) {
+        String retrieveInfoText(File infoFile = infoFile) {
             // if reading from cd use these parameters as a starting point
-            List cyanripInfo = [cyanrip, '-s' , offset, '-I', '-D', tempDirPath, '-U'] // don't need offset here...
+            // the -U may or may not be appropriate here -- TODO - maybe not -U, but -G later
+            String[] cyanripInfo =
+                [cyanrip, '-s' , offset, '-I', '-D', workingDirPath, '-U'] // don't need offset here...
 
             // simplistic command line option -if file given then read from named file, otherwise CD
             // will want to obtain many info files for testing
             infoText =  infoFile ?
-                                (new File(infoFile)).text :
+                                infoFile.text :
                                 util.procRunner(cyanripInfo, 'cyanrip info')
 
             // this test could be skipped if reading from a file,
             // but for testing with a file that shows multiple, leave in
             if (infoText =~ /Multiple releases found/) {
-                chooseFromMultiple(infoText) // this should become an mbz static method
+                releaseID = mbz.chooseFromMultiple(infoText)
                 cyanripInfo += ['-R', releaseID]
                 infoText = util.procRunner(cyanripInfo, 'cyanrip info')
             }
-            return null
+            return infoText
         }
 
         // builds albumMap and tracksMapList for later use
-        Void parseInfoText(String infoText = infoText) {
+        void parseInfoText(String infoText = infoText) {
             // turn into try/catch
             // could be used to lookup offset for multi-drive machines
             // could be put in the cue info
@@ -465,21 +502,34 @@ class Cruft {
                 String tracksInfo = matcher.group(4)
 
                 albumMap = Util.infoToMap albumInfo
+
                 //gapMap   =  gapInfo  -- gap info is not in key value format -- but not sure it is needed
                 Map trackOne = trackToMap(tracksInfo, '0?1')
+
+                if ( trackOne.trackMeta.track != '1') {
+                    System.exit(1)
+                }
+
                 // give the albumMap all of the data that it should have but is buried in track info output
-                albumMap <<  trackOne.metadata
+                // but ignore the items that really are specific to the track
+                Map trackOneMeta = trackOne['trackMeta']
+                trackOneMeta.removeAll { key, value -> (['title', 'artist', 'mbid', 'track'].contains(key)) }
+                albumMap += trackOneMeta
+
                 // plus some additional metadata
-                albumMap.pregap = (trackOne.properties['Start LSN']).toInteger()
+                albumMap['pregap'] = (String) trackOne.trackProp.'Start LSN'
                 albumMap.cyanrip = "cyanrip ${cyanripVersion}"
                 // set any metadata needed prior to getFilename (e.g. genre, etc.)
-                albumMap.year = Cruft.extractYear(albumMap.date)
+                albumMap.year = Musicbrainz.extractYear((String) albumMap.date)
                 albumMap.fileName = albumName()
                 albumMap.cueComment = cueComment
 
                 Matcher drive = (infoText =~ /(?<=CDROM sensed:\s*)(.*)/)
                 if (drive.find()) {
                     albumMap.driveInfo = drive.group(1).trim().replaceAll(/\s+/, '-')
+                    albumMap.removeAll { key, value ->
+                        ['Drive used', 'Device model'].contains(key)
+                    }
                 }
 
                 // could debug with this
@@ -498,12 +548,14 @@ class Cruft {
     class Tagger {
 
         String taggedFilename = "tagged.${outputType}"
+        String vorbisFileName
+        File vorbisFile
 
-        String cue2vorbis(String cueFile) {
-            String vorbisFile = "${cueFile}.vorbis"
-            File vorbis = new File(vorbisFile)
-            vorbis.text = ''
-            cue.eachLine { line ->
+        String cue2vorbis(String cueAbsolute = cue.cueAbsolute) {
+            vorbisFileName = "${cueAbsolute}.vorbis"
+            vorbisFile = new File(vorbisFileName)
+            vorbisFile.text = ''
+            cue.sheet.eachLine { String line
                 // each does not have a break, but walking past all of the unneeded lines is not that expensive
                 if (!(line =~ /^(\s+|FILE)/)) {
                     String tempLine  = line.replaceFirst(~/\s+/, '=')
@@ -511,7 +563,7 @@ class Cruft {
                     tempLine = tempLine.replaceFirst(~/"\s*$/, '')
                     // how about REM COMMENT lines -- could be multiples -- how to handle?
                     // https://xiph.org/vorbis/doc/v-comment.html - verify values are legal alphabet
-                    vorbis << "${tempLine}\n"
+                    vorbisFile << "${tempLine}\n"
                 }
             }
             return vorbisFile
@@ -519,16 +571,18 @@ class Cruft {
 
         String tag(String inputFile) {
             log.info 'Tagging file'
-            vorbisFile = cue2vorbis(cueFile)
-            String front = util.tempAbsolutePath(frontImage)
-            String back  = util.tempAbsolutePath(backImage)
+            // ? error if vorbisFile does not exist?
+            String frontName = util.workingAbsolute(frontImage)
+            String backName  = util.workingAbsolute(backImage)
+            File front = new File (frontName)
+            File back = new File(backName)
 
-            List tagCmd = [metaflac]
-            if (front.exist()) { tagCmd << [ '--import-picture-from', "3||Front||${front}"] }
-            if (back.exist())  { tagCmd << [ '--import-picture-from', "4||Back||${back}"]   }
-            tagCmd <<  [   '--import-cuesheet-from', cueFile,
-                            "--set-tag-from-file=CUESHEET=${cueFile}",
-                            '--import-tags-from', vorbisFile,
+            String[] tagCmd = [metaflac]
+            if (front.exists()) { tagCmd += [ '--import-picture-from', "3||Front||${frontName}"] }
+            if (back.exists())  { tagCmd += [ '--import-picture-from', "4||Back||${backName}"]   }
+            tagCmd += [ '--import-cuesheet-from', cue.cueAbsolute,
+                            "--set-tag-from-file=CUESHEET=${cue.cueAbsolute}",
+                            '--import-tags-from', vorbisFileName,
                             '-o', taggedFilename,
                             inputFile ]
             String procText = util.procRunner(tagCmd, 'tagging file')
@@ -538,28 +592,30 @@ class Cruft {
     }
 
     class Merger {
+
         // better to put data in file than use pipes for this
         File concatFile
+        String mergedFileName
 
         String collectTracks() {
             log.debug 'Collecting file list.'
-            if (!tempDir) {
-                errorExit('No tempDir, so nothing to be done')
+            if (!workingDir) {
+                errorExit('No workingDir, so nothing to be done')
             }
-            concatFile = new File(util.tempAbsolutePath('concat.txt').toString())
+            concatFile = new File(util.workingAbsolute('concat.txt'))
 
-            createPregapTrack() // only needed if pregap exists -- but that check is done in the method
+            addPregapTrackFile() // only needed if pregap exists -- but that check is done in the method
 
             // Collects files, ignoring directories
-            List fileList = []
+            List<File> fileList = []
             // how to put outputType variable in this pattern?
-            tempDir.eachFileMatch(FileType.FILES, ~/\d.*\.flac$/) { file ->
+            workingDir.eachFileMatch(FileType.FILES, ~/\d.*\.flac$/) { file ->
                 fileList << file
             }
             concatFile.text = ''  // in case this is run a second time
             if (fileList) {
                 fileList.sort().each { file ->
-                    String fileName = util.tempAbsolutePath(file.name)
+                    String fileName = util.workingAbsolute(file.name)
                     concatFile << "file '${fileName}'\n"
                 }
             }
@@ -571,67 +627,92 @@ class Cruft {
             if (!concatFile) {
                 errorExit('No concatenation file, so nothing to be done')
             }
-            String mergedOutFile = util.tempAbsolutePath("merged.${outputType}")
-            List concatCmd = ['ffmpeg', '-y', '-f', 'concat', '-safe', '0', '-i',
-                                concatFile, '-c:a', outputType, mergedOutFile]
+            String mergedFileName = util.workingAbsolute("merged.${outputType}")
+            String[] concatCmd = ['ffmpeg', '-y', '-f', 'concat', '-safe', '0', '-i',
+                                concatFile, '-c:a', outputType, mergedFileName]
             String procText = util.procRunner(concatCmd, 'Concatenation')
             return procText
         }
 
-        String createPregapTrack() {
+        String addPregapTrackFile() {
             String procText = ''
-            if (albumMap.pregap > 0) {
+            if ("${albumMap.pregap}".toInteger() > 0) {
                 log.info "Creating pregap file of ${albumMap.pregap} frames for insertion prior to track 1"
-                Integer pregapMsec = ((albumMap.pregap * 1000) / 75) // can this be more precise?
-                List pregapCmd = [ffmpeg, '-y', '-f', 'lavfi', '-i', 'anullsrc=channel_layout=stereo:sample_rate=44100',
-                            '-t', "${pregapMsec}ms", util.tempAbsolutePath("0 - pregap.${outputType}").toString()]
+                Integer pregapMsec = ((("${albumMap.pregap}".toInteger() * 1000) / 75).round()).toInteger() //?precise
+                String[] pregapCmd =
+                    [ffmpeg, '-y', '-f', 'lavfi', '-i', 'anullsrc=channel_layout=stereo:sample_rate=44100',
+                            '-t', "${pregapMsec}ms", util.workingAbsolute("0 - pregap.${outputType}")]
                 procText = util.procRunner(pregapCmd, 'pregap file creation')
             }
             return procText
         }
 
-        Void merge() {
+        String merge() {
             collectTracks()
             concatTracks()
-            return null
+            return mergedFileName
         }
 
     }
 
     class CyanripRip {
 
-        String rip(String mbzId = releaseID) {
-            if (!tempDir) { util.makeTempDIr() }
-            if (!cue) { buildCue() }
+        // if reading from cd use these parameters as a starting point
+        // calling code could << other args (e.g. -S, etc.)
+        // seems like the -G not only doesn't embed image, but also doesn't pull
+        // if using -G will have to pull images from info
+        String[] cyanripCmd = [cyanrip, '-s' , offset ]
 
-            // if reading from cd use these parameters as a starting point
-            // seems like the -G not only doesn't embed image, but also doesn't pull
-            // if using -G will have to pull images from info
-            List cyanripCmd = [cyanrip, '-s' , offset, '-R', mbzId, '-D', tempDirPath]
-            // add output dir, name, etc.
+        String rip(String mbzId = releaseID) {
+            if (!workingDir) { util.makeWorkingDir() }
+            if (!cue) { makeCue() }
+            cyanripCmd += ['-R', mbzId, '-D', workingDirPath]
+
             String proc = util.procRunner(cyanripCmd, 'cyanrip rip')
             return proc
         }
 
     }
 
-    String buildCue(String infoFile = null) {
-        cyanInfo.getInfoText(infoFile) // could print or save it if interested...
+    // creates an album filename based on format list and album metadata
+    String albumName() {
+        String format = (albumMap.album_artist =~ /Various Artists/) ? 'va' : ''
+        format += (albumMap.totaldiscs == '1') ? 'standard' : 'multidisc'
+
+        String fileName = ''
+        // change format to be #key# rather than $
+        filenameFormats["${format}"].each { formatElement ->
+            if (formatElement[0] != '$') {
+                fileName += formatElement
+            } else {
+                String meta = formatElement.drop(1)
+                if (albumMap[meta]) {
+                    fileName += albumMap[meta]
+                } else {
+                    fileName += formatElement
+                }
+            }
+        }
+        return fileName
+    }
+
+    String makeCue(File infoFile = null) {
+        cyanInfo.retrieveInfoText(infoFile)
         cyanInfo.parseInfoText()
-        String cueString = cue.build(albumMap, tracksMapList)
-        return cueString
+        String sheet = cue.makeSheet(albumMap, tracksMapList)
+        return sheet
     }
 
     void ripCD() {
-        buildCue()
+        makeCue()
         log.debug cue.sheet
         //cyanRip.rip()
         // this could be a cue method
-        File cueFileAbsolute = new File(util.tempAbsolutePath(cueFile))
+        File cueFileAbsolute = new File(cue.cueAbsolute)
         cueFileAbsolute.text = cue.sheet
 
-        merger.merge()
-        tagger.tag()
+        String mergedFileName = merger.merge()
+        tagger.tag(mergedFileName)
         null
     }
 

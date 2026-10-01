@@ -6,6 +6,7 @@
         "CATALOGNUMBER",
         "CDDB",
         "CDROM",
+        "Configurator",
         "crinfo",
         "cuesheet",
         "cyanrip",
@@ -27,6 +28,7 @@
         "releasestatus",
         "sprintf",
         "totaldiscs",
+        "trunc",
         "vamultidisc",
         "vastandard",
         "vorbis"
