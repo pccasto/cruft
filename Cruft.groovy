@@ -94,7 +94,7 @@ class Cruft {
     // e.g. to express something like (disc 1 of 2)
     List outputDirFormat = ['/mnt/Media/Music/IMAGES/', '$album_artist']
 
-    List<String> directoryPortion = ['album_artist']
+    List<String> directoryPortion = ['$album_artist']
     List<String> basePortion = ['$album_artist', ' - (', '$year', ') ', '$album']
     List<String> multiDiskPortion = [' [', '$disc', '/',  '$totaldiscs', ']']
     List<String> outputPortion =  [ '.', outputType ]
@@ -220,15 +220,16 @@ class Cruft {
 
         // this is a Util like method, but does not behave well as a static
         String procRunner(String[] cmdList, String procName = null) {
+            String procText = ''
+
             // Save the original stdout so we can still print to the console
             PrintStream originalOut = System.out
-
-            String procText = ''
 
             try {
                 if (procName) {
                     log.info "${procName} process starting"
                 }
+                log.debug "Running command: ${cmdList.join(' ')}"
                 // Create a custom filter stream - tailored for cyanrip ripping output
                 //  to handle the 'Ripping and encoding' to overwrite, rather than scroll!
                 // AND to tee the output into the procText variable
@@ -272,7 +273,7 @@ class Cruft {
                 System.out = new PrintStream(filterStream)
                 StringBuilder stderr = new StringBuilder()
 
-                Process proc = cmdList.execute()
+        Process proc = ['ls'].execute() // cmdList.execute()
                 // stream stdout as we go, rather than wait & print
                 // better for the long-running actions
                 // there are some processes that send a lot to stderr, even without error
@@ -344,11 +345,12 @@ class Cruft {
         File cueFile
         String cueAbsolute
 
-        void writeFile(String cueFileName = cueFileName) {
+        String writeFile(String cueFileName = cueFileName) {
             cueAbsolute = util.workingAbsolute(cueFileName)
             if (!sheet) { makeSheet() }
             cueFile = new File(cueAbsolute)
             cueFile.text = sheet
+            return cueFile.name
         }
 
         // use the info returned from cyanrip -I (or the logs?) to create a cue sheet
@@ -449,11 +451,12 @@ class Cruft {
         }
 
         Map<String, Map> trackToMap(String trackInfo, String trackNo = '\\d+') {
-            Matcher matchTrack = (trackInfo =~
-            /(?s)Track\s+($trackNo)\s+info:.+?Properties[^\n]*?\n(.+?)\n\s+Metadata[^\n]*\n(.+?)\n(?=\s+(Embed|File))/
+            Matcher matchTrack =  (trackInfo =~
+            /(?s)Track\s+($trackNo)\s+info:.+?Properties[^\n]*?\n(.+?)\n\s+Metadata[^\n]*\n(.+?)\n+(?=\s*(Embed|File|$))/
             )
+
             if (!matchTrack.find()) {
-                errorExit("Could not match a track:\n$trackInfo")
+                errorExit("Could not match a track (${trackNo}):\n$trackInfo")
             }
             // yes, these intermediate variables are not needed, but helped while developing/troubleshooting...
             //Integer trackNumber = matchTrack.group(1).toInteger()
@@ -636,9 +639,9 @@ class Cruft {
 
         String addPregapTrackFile() {
             String procText = ''
-            if ("${albumMap.pregap}".toInteger() > 0) {
+            if ((albumMap.pregap).toInteger() > 0) {
                 log.info "Creating pregap file of ${albumMap.pregap} frames for insertion prior to track 1"
-                Integer pregapMsec = ((("${albumMap.pregap}".toInteger() * 1000) / 75).round()).toInteger() //?precise
+                Integer pregapMsec = (((albumMap.pregap).toInteger() * 1000) / 75).round().toInteger() //?precise
                 String[] pregapCmd =
                     [ffmpeg, '-y', '-f', 'lavfi', '-i', 'anullsrc=channel_layout=stereo:sample_rate=44100',
                             '-t', "${pregapMsec}ms", util.workingAbsolute("0 - pregap.${outputType}")]
@@ -696,23 +699,20 @@ class Cruft {
         return fileName
     }
 
-    String makeCue(File infoFile = null) {
+    String makeCue(File infoFile = cyanInfo.infoFile) {
         cyanInfo.retrieveInfoText(infoFile)
         cyanInfo.parseInfoText()
-        String sheet = cue.makeSheet(albumMap, tracksMapList)
-        return sheet
+        cue.makeSheet(albumMap, tracksMapList)
+        return cue.sheet
     }
 
     void ripCD() {
         makeCue()
-        log.debug cue.sheet
+        log.debug cue.sheet // could have a step to allow for editing cue file at this point
+        cue.writeFile()
         //cyanRip.rip()
-        // this could be a cue method
-        File cueFileAbsolute = new File(cue.cueAbsolute)
-        cueFileAbsolute.text = cue.sheet
-
         String mergedFileName = merger.merge()
-        tagger.tag(mergedFileName)
+        //tagger.tag(mergedFileName)
         null
     }
 

@@ -28,7 +28,7 @@ String infoFileName = (args.length > 0) ? args[0] : null
 
 cruft.logLevel('info')
 
-cruft.cyanrip = '/home/paul/git/cyanrip/build/src/cyanrip' // this provides the -J option, but maybe 0.9.3 is OK
+cruft.cyanrip = '/Users/paul/git/cyanrip/build/src/cyanrip' // this provides the -J option, but maybe 0.9.3 is OK
 cruft.offset = 6   // this could be set on a per drive basis when multiple drives are available
 
 //cruft.buildCue(infoFile)
@@ -58,7 +58,7 @@ cruft.log.info cruft.tracksMapList[0].trackMeta.toString()
 cruft.cue.makeSheet()
 println cruft.cue.sheet
 
-//cruft.ripCD(infoFile)
+cruft.ripCD()
 
 //ripper = cruft.cyanRip.rip()
 //ripper.rip
