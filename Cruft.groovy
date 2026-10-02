@@ -274,7 +274,7 @@ class Cruft {
                 System.out = new PrintStream(filterStream)
                 StringBuilder stderr = new StringBuilder()
 
-        Process proc = ['ls'].execute() // cmdList.execute()
+                Process proc = cmdList.execute()
                 // stream stdout as we go, rather than wait & print
                 // better for the long-running actions
                 // there are some processes that send a lot to stderr, even without error

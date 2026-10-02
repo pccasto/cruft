@@ -26,9 +26,9 @@ def cruft = cruftClass.newInstance()
 // for testing against files, rather than live CD
 String infoFileName = (args.length > 0) ? args[0] : null
 
-cruft.logLevel('info')
+cruft.logLevel('debug')
 
-cruft.cyanrip = '/Users/paul/git/cyanrip/build/src/cyanrip' // this provides the -J option, but maybe 0.9.3 is OK
+cruft.cyanrip = '/home/paul/git/cyanrip/build/src/cyanrip' // this provides the -J option, but maybe 0.9.3 is OK
 cruft.offset = 6   // this could be set on a per drive basis when multiple drives are available
 
 //cruft.buildCue(infoFile)
@@ -37,7 +37,7 @@ cruft.offset = 6   // this could be set on a per drive basis when multiple drive
 
 //cruft.cyanRip.rip()
 //cruft.tempDirPath = '/tmp/cruft-3429498391152099212'
-String workingDir = '/Users/paul/Music/temp/tapestry'
+String workingDir = '/home/paul/Music/temp/hoth'
 cruft.workingDirPath = workingDir
 cruft.util.makeWorkingDir()
 cruft.cyanInfo.infoFile = new File("${workingDir}/info.txt")
